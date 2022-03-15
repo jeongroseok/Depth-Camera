@@ -7,7 +7,6 @@ from PIL import Image
 from camera import create_device
 
 SCREEN = (480, 320)
-FPS = 24
 
 
 class VideoSaver:
@@ -41,14 +40,16 @@ class VideoSaver:
 
 def main():
     with open("config.json") as file:
-        root = json.load(file)["path"]
+        json_object = json.load(file)
+        root = json_object["path"]
+        fps = json_object["fps"]
 
-    with create_device(FPS, SCREEN) as device:
+    with create_device(fps, SCREEN) as device:
         video_saver = VideoSaver(root)
 
         # setup queues
-        queue_center = device.getOutputQueue(name="center", maxSize=FPS, blocking=True)
-        queue_stereo = device.getOutputQueue(name="stereo", maxSize=FPS, blocking=True)
+        queue_center = device.getOutputQueue(name="center", maxSize=fps, blocking=True)
+        queue_stereo = device.getOutputQueue(name="stereo", maxSize=fps, blocking=True)
         queue_preview = device.getOutputQueue(
             name="center_preview", maxSize=1, blocking=False
         )
@@ -67,12 +68,12 @@ def main():
                 while queue_stereo.has():
                     video_saver.push_stereo(queue_stereo.get().getData())
 
-            if queue_preview.has():
+            while queue_preview.has():
                 image = queue_preview.get().getCvFrame()
                 image = Image.fromarray(image)
                 picture.image = image
 
-        app.repeat(int(1000 / FPS), update)
+        app.repeat(int(1000 / fps), update)
         app.display()
 
 
