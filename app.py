@@ -1,81 +1,97 @@
-import json
-from time import time
+import argparse
 
-from guizero import App, Box, Picture, PushButton
-from PIL import Image
+import cv2
+import depthai as dai
+from depthai_sdk.managers import PipelineManager
+from depthai_sdk.previews import Previews
 
-from camera import create_device
+from pairing_system import PairingSystem
+from video import VideoWriter
 
-SCREEN = (480, 320)
+parser = argparse.ArgumentParser()
+parser.add_argument("-p", "--path", type=str, default=".", help="save path")
+parser.add_argument("-f", "--fps", type=float, default=8, help="fps")
+parser.add_argument(
+    "-sc", "--screen_size", type=tuple, default=(480, 320), help="screeen size"
+)
 
+args = parser.parse_args()
 
-class VideoSaver:
-    def __init__(self, root) -> None:
-        self.root = root
-        self.started = False
+cam_list = {
+    Previews.color.name: 0,
+    Previews.disparity.name: 1,
+}
 
-    def push_center(self, data):
-        data.tofile(self.file_center)
+# Start defining a pipeline
+pipeline_manager = PipelineManager()
 
-    def push_stereo(self, data):
-        data.tofile(self.file_stereo)
+pipeline_manager.createColorCam(
+    previewSize=(1280, 720),
+    res=dai.ColorCameraProperties.SensorResolution.THE_1080_P,
+    fps=args.fps,
+    xout=True,
+)
+pipeline_manager.createLeftCam(
+    res=dai.MonoCameraProperties.SensorResolution.THE_720_P, fps=args.fps
+)
+pipeline_manager.createRightCam(
+    res=dai.MonoCameraProperties.SensorResolution.THE_720_P, fps=args.fps
+)
+pipeline_manager.createDepth(useDisparity=True)
 
-    def start(self):
-        timestamp = str(int(time()))
-        self.file_center = open(f"{self.root}/{timestamp}_center.mp4", "wb")
-        self.file_stereo = open(f"{self.root}/{timestamp}_stereo.mp4", "wb")
-        self.started = True
-
-    def end(self):
-        self.file_center.close()
-        self.file_stereo.close()
-        self.started = False
-
-    def toggle(self):
-        if self.started:
-            self.end()
-        else:
-            self.start()
-
-
-def main():
-    with open("config.json") as file:
-        json_object = json.load(file)
-        root = json_object["path"]
-        fps = json_object["fps"]
-
-    with create_device(fps, SCREEN) as device:
-        video_saver = VideoSaver(root)
-
-        # setup queues
-        queue_center = device.getOutputQueue(name="center", maxSize=fps, blocking=True)
-        queue_stereo = device.getOutputQueue(name="stereo", maxSize=fps, blocking=True)
-        queue_preview = device.getOutputQueue(
-            name="center_preview", maxSize=1, blocking=False
-        )
-
-        # setup gui
-        app = App(title="Camera", width=SCREEN[0], height=SCREEN[1])
-        box = Box(app, width="fill", align="bottom")
-        button = PushButton(box, width="fill", text="Start", command=video_saver.toggle)
-        picture = Picture(app, align="top")
-
-        def update():
-            button.text = "STOP" if video_saver.started else "START"
-            if video_saver.started:
-                while queue_center.has():
-                    video_saver.push_center(queue_center.get().getData())
-                while queue_stereo.has():
-                    video_saver.push_stereo(queue_stereo.get().getData())
-
-            while queue_preview.has():
-                image = queue_preview.get().getCvFrame()
-                image = Image.fromarray(image)
-                picture.image = image
-
-        app.repeat(int(1000 / fps), update)
-        app.display()
+video_writer = VideoWriter(args.path, args.fps)
 
 
-if __name__ == "__main__":
-    main()
+def on_mouse(event, x, y, flags, params):
+    global video_writer
+    if event == cv2.EVENT_LBUTTONUP:
+        video_writer.toggle()
+    pass
+
+
+# Pipeline defined, now the device is assigned and pipeline is started
+with dai.Device(pipeline_manager.pipeline) as device:
+    queues = {}
+    for key, value in cam_list.items():
+        queues[key] = device.getOutputQueue(name=key, maxSize=4, blocking=False)
+    ps = PairingSystem(allowed_instances=list(cam_list.values()))
+
+    window_title = "Camera"
+    cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_title, args.screen_size)
+    cv2.setMouseCallback(window_title, on_mouse)
+
+    while True:
+        for c in cam_list:
+            ps.add_packet(queues[c].tryGet())
+
+        for synced in ps.get_pairs():
+            frame, seqnum, tstamp = {}, {}, {}
+            for c in cam_list:
+                pkt = synced[cam_list[c]]
+                frame[c] = pkt.getCvFrame()
+                seqnum[c] = pkt.getSequenceNum()
+
+            if not (seqnum[Previews.color.name] == seqnum[Previews.disparity.name]):
+                print("ERROR: out of sync!!!")
+
+            if video_writer.started:
+                color = cv2.cvtColor(frame[Previews.color.name], cv2.COLOR_BGR2RGB)
+                video_writer.write_color(color)
+                depth = cv2.cvtColor(frame[Previews.disparity.name], cv2.COLOR_GRAY2RGB)
+                video_writer.write_depth(depth)
+
+            output = cv2.resize(frame[Previews.color.name], args.screen_size)
+            output = cv2.putText(
+                output,
+                "STOP" if video_writer.started else "START",
+                (0, args.screen_size[1]),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 0, 0),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow(window_title, output)
+
+            key = cv2.waitKey(1)
