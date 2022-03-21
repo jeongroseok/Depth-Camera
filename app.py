@@ -94,4 +94,4 @@ with dai.Device(pipeline_manager.pipeline) as device:
             )
             cv2.imshow(window_title, output)
 
-            key = cv2.waitKey(1)
+            key = cv2.waitKey(int(1000 / args.fps))
