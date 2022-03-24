@@ -4,12 +4,9 @@ import argparse
 import cv2
 import depthai as dai
 
-from utils import VideoWriter
-
 parser = argparse.ArgumentParser()
 parser.add_argument("-p", "--path", type=str, default=".", help="save path")
 parser.add_argument("-f", "--fps", type=float, default=8, help="fps")
-args = parser.parse_args()
 
 # Create pipeline
 pipeline = dai.Pipeline()
@@ -33,19 +30,12 @@ xoutVideoDepth.setStreamName("video_depth")
 # Properties
 rgb.setBoardSocket(dai.CameraBoardSocket.RGB)
 rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-rgb.setFps(args.fps)
 monoRight.setBoardSocket(dai.CameraBoardSocket.RIGHT)
 monoRight.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
-monoRight.setFps(args.fps)
 monoLeft.setBoardSocket(dai.CameraBoardSocket.LEFT)
 monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
-monoLeft.setFps(args.fps)
-encoderRgb.setDefaultProfilePreset(
-    fps=args.fps, profile=dai.VideoEncoderProperties.Profile.H264_HIGH
-)
-encoderDepth.setDefaultProfilePreset(
-    fps=args.fps, profile=dai.VideoEncoderProperties.Profile.H264_HIGH
-)
+encoderRgb.setDefaultProfilePreset(30, dai.VideoEncoderProperties.Profile.H264_HIGH)
+encoderDepth.setDefaultProfilePreset(30, dai.VideoEncoderProperties.Profile.H264_HIGH)
 
 depth.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 depth.setRectifyEdgeFillColor(0)  # Black, to better see the cutout
@@ -62,37 +52,39 @@ encoderDepth.bitstream.link(xoutVideoDepth.input)
 # Connect to device and start pipeline
 with dai.Device(pipeline) as device:
     qRgb = device.getOutputQueue("rgb", 1, blocking=False)
-    qEncoderRgb = device.getOutputQueue("video_rgb", maxSize=30, blocking=False)
-    qEncoderDepth = device.getOutputQueue("video_depth", maxSize=30, blocking=False)
+    qEncoderRgb = device.getOutputQueue("video_rgb", maxSize=30, blocking=True)
+    qEncoderDepth = device.getOutputQueue("video_depth", maxSize=30, blocking=True)
 
     frame = None
 
-    videoWriter = VideoWriter(args.path)
+    started = False
+    videoFileRgb = open("../../../video.mp4", "wb")
+    videoFileDepth = open("../../../video_d.mp4", "wb")
 
-    def on_click(event, x, y, flags, params):
-        global videoWriter
+    def on_mouse(event, x, y, flags, params):
+        global started
         if event == cv2.EVENT_LBUTTONUP:
-            videoWriter.toggle()
+            started = not started
         pass
-
-    window_title = "CAM"
-    cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(window_title, on_click)
+    cv2.setMouseCallback(window_title, on_mouse)
 
     while True:
         inRgb = qRgb.tryGet()
 
+        while qEncoderRgb.has():
+            qEncoderRgb.get().getData().tofile(videoFileRgb)
+
+        while qEncoderDepth.has():
+            qEncoderDepth.get().getData().tofile(videoFileDepth)
+
         if inRgb is not None:
             frame = inRgb.getCvFrame()
-
-        if videoWriter.started:
-            videoWriter.write(qEncoderRgb, qEncoderDepth)
 
         if frame is not None:
             output = cv2.resize(frame, (300, 200))
             output = cv2.putText(
                 output,
-                "STOP" if videoWriter.started else "START",
+                "STOP" if started else "START",
                 (0, 200),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
@@ -100,7 +92,7 @@ with dai.Device(pipeline) as device:
                 2,
                 cv2.LINE_AA,
             )
-            cv2.imshow(window_title, output)
+            cv2.imshow("rgb", output)
 
         if cv2.waitKey(1) == ord("q"):
             break
